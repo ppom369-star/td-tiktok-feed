@@ -145,15 +145,27 @@ def parse_dom_video_links(page, username: str) -> list[dict]:
         seen_ids.add(video_id)
         
         thumbnail = None
+        img_alt = None
         try:
             img = link.locator("img").first
             if img.count() > 0:
                 thumbnail = img.get_attribute("src")
+                img_alt = img.get_attribute("alt")
         except Exception:
             thumbnail = None
+            img_alt = None
             
-        title = link.inner_text().strip() or f"คลิป TikTok ใหม่ #{video_id}"
-        clean_title = title.split("\n")[0] if "\n" in title else title
+        aria_label = link.get_attribute("aria-label") or link.get_attribute("title")
+        raw_text = link.inner_text().strip()
+        
+        candidate_title = img_alt or aria_label
+        if not candidate_title or candidate_title.isdigit() or re.match(r'^\d+(\.\d+)?[KkMm]?$', candidate_title):
+            if raw_text and not raw_text.isdigit() and not re.match(r'^\d+(\.\d+)?[KkMm]?$', raw_text):
+                candidate_title = raw_text
+            else:
+                candidate_title = f"คลิป TikTok ใหม่ #{video_id}"
+                
+        clean_title = candidate_title.split("\n")[0] if "\n" in candidate_title else candidate_title
         clean_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
         
         videos.append({
