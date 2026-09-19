@@ -1,15 +1,28 @@
 import os
 import re
+import json
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 
 raw_users = os.getenv("TIKTOK_USERS", "")
 if raw_users.strip():
     TARGET_USERS = [u.strip().lstrip("@") for u in raw_users.split(",") if u.strip()]
 else:
     TARGET_USERS = ["chengaming54"]
+
+def apply_stealth(page):
+    try:
+        from playwright_stealth import stealth_sync
+        stealth_sync(page)
+        return
+    except Exception:
+        pass
+    try:
+        from playwright_stealth import Stealth
+        Stealth().apply_stealth_sync(page.context)
+    except Exception:
+        pass
 
 def generate_rss_xml(username: str, videos: list[dict]) -> str:
     rss = ET.Element("rss", version="2.0", attrib={"xmlns:media": "http://search.yahoo.com/mrss/"})
@@ -45,6 +58,34 @@ def scrape_user_videos(page, username: str) -> list[dict]:
     page.wait_for_timeout(1000)
     
     videos = []
+    
+    try:
+        script_element = page.locator("script#__UNIVERSAL_DATA_FOR_REHYDRATION__").first
+        if script_element.count() > 0:
+            raw_text = script_element.inner_text()
+            if raw_text:
+                data = json.loads(raw_text)
+                default_scope = data.get("__DEFAULT_SCOPE__", {})
+                detail = default_scope.get("webapp.user-detail", {})
+                item_list = detail.get("itemList", [])
+                for item in item_list:
+                    vid_id = str(item.get("id"))
+                    title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
+                    cover = item.get("video", {}).get("cover", "")
+                    clean_url = f"https://www.tiktok.com/@{username}/video/{vid_id}"
+                    videos.append({
+                        "video_id": vid_id,
+                        "url": clean_url,
+                        "title": title.split("\n")[0] if "\n" in title else title,
+                        "thumbnail": cover
+                    })
+                    if len(videos) >= 10:
+                        break
+                if videos:
+                    return videos
+    except Exception:
+        pass
+
     links = page.locator("a[href*='/video/']").all()
     seen_ids = set()
     
@@ -58,10 +99,15 @@ def scrape_user_videos(page, username: str) -> list[dict]:
             continue
         seen_ids.add(video_id)
         
-        img = link.locator("img").first
-        thumbnail = img.get_attribute("src") if img.count() > 0 else None
+        thumbnail = None
+        try:
+            img = link.locator("img").first
+            if img.count() > 0:
+                thumbnail = img.get_attribute("src")
+        except Exception:
+            thumbnail = None
+            
         title = link.inner_text().strip() or f"คลิป TikTok ใหม่ #{video_id}"
-        
         clean_title = title.split("\n")[0] if "\n" in title else title
         clean_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
         
@@ -85,7 +131,7 @@ def main():
             locale="th-TH"
         )
         page = context.new_page()
-        stealth_sync(page)
+        apply_stealth(page)
         
         for user in TARGET_USERS:
             try:
@@ -95,6 +141,8 @@ def main():
                     with open(f"feeds/{user}.xml", "w", encoding="utf-8") as f:
                         f.write(xml_data)
                     print(f"Successfully generated feed for {user} ({len(videos)} videos)")
+                else:
+                    print(f"No videos found for {user}")
             except Exception as e:
                 print(f"Error scraping {user}: {e}")
                 
