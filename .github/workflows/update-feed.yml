@@ -54,3 +54,13 @@ jobs:
             git pull --rebase origin main
             git push
           fi
+
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-tiktok-pages
+          path: |
+            debug_*.png
+            debug_*.html
+          if-no-files-found: ignore

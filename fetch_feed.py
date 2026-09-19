@@ -133,6 +133,24 @@ def scrape_user_videos(page, username: str) -> list[dict]:
     print(f"[{username}] Navigating to {url}...")
     page.goto(url, wait_until="domcontentloaded", timeout=45000)
     page.wait_for_timeout(3000)
+
+    # Handle Cookie consent if present
+    try:
+        cookie_selectors = [
+            "button:has-text('Accept all')",
+            "button:has-text('Accept')",
+            "button:has-text('Allow all')",
+            "[data-e2e='cookie-banner-accept']"
+        ]
+        for sel in cookie_selectors:
+            btn = page.locator(sel).first
+            if btn.count() > 0 and btn.is_visible():
+                btn.click()
+                print(f"[{username}] Clicked cookie consent banner ({sel})")
+                page.wait_for_timeout(1500)
+                break
+    except Exception:
+        pass
     
     try:
         page.keyboard.press("Escape")
@@ -140,8 +158,14 @@ def scrape_user_videos(page, username: str) -> list[dict]:
         pass
 
     print(f"[{username}] Page title: '{page.title()}' | URL: {page.url}")
+    
+    try:
+        body_sample = page.evaluate("() => document.body ? document.body.innerText.substring(0, 300).replace(/\\n+/g, ' ') : ''")
+        print(f"[{username}] Body preview: {body_sample}")
+    except Exception:
+        pass
 
-    # Extract directly from DOM Script tags using textContent (NOT inner_text)
+    # Extract directly from DOM Script tags
     try:
         script_payloads = page.evaluate("""() => {
             const results = [];
@@ -150,6 +174,14 @@ def scrape_user_videos(page, username: str) -> list[dict]:
                 const el = document.getElementById(id);
                 if (el && el.textContent) {
                     results.push(el.textContent);
+                }
+            }
+            if (results.length === 0) {
+                const scripts = document.querySelectorAll('script');
+                for (const s of scripts) {
+                    if (s.textContent && (s.textContent.includes('itemList') || s.textContent.includes('ItemModule'))) {
+                        results.push(s.textContent);
+                    }
                 }
             }
             return results;
@@ -161,8 +193,8 @@ def scrape_user_videos(page, username: str) -> list[dict]:
                 if parsed:
                     print(f"[{username}] Successfully extracted {len(parsed)} videos from Hydration Script")
                     return parsed[:10]
-            except Exception as json_err:
-                print(f"[{username}] JSON parse error: {json_err}")
+            except Exception:
+                pass
     except Exception as e:
         print(f"[{username}] Script evaluation error: {e}")
 
@@ -239,6 +271,15 @@ def scrape_user_videos(page, username: str) -> list[dict]:
         })
         if len(videos) >= 10:
             break
+            
+    if not videos:
+        try:
+            page.screenshot(path=f"debug_{username}.png", full_page=True)
+            with open(f"debug_{username}.html", "w", encoding="utf-8") as f:
+                f.write(page.content())
+            print(f"[{username}] Saved debug screenshot and HTML")
+        except Exception as err:
+            print(f"[{username}] Could not save debug files: {err}")
             
     return videos
 
