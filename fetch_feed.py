@@ -5,7 +5,11 @@ from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth_sync
 
-TARGET_USERS = ["chengaming54"]
+raw_users = os.getenv("TIKTOK_USERS", "")
+if raw_users.strip():
+    TARGET_USERS = [u.strip().lstrip("@") for u in raw_users.split(",") if u.strip()]
+else:
+    TARGET_USERS = ["chengaming54"]
 
 def generate_rss_xml(username: str, videos: list[dict]) -> str:
     rss = ET.Element("rss", version="2.0", attrib={"xmlns:media": "http://search.yahoo.com/mrss/"})
@@ -21,8 +25,15 @@ def generate_rss_xml(username: str, videos: list[dict]) -> str:
         ET.SubElement(item, "title").text = v["title"]
         ET.SubElement(item, "link").text = v["url"]
         ET.SubElement(item, "guid").text = v["video_id"]
+        
+        desc_parts = []
         if v.get("thumbnail"):
             ET.SubElement(item, "media:content", attrib={"url": v["thumbnail"], "medium": "image"})
+            desc_parts.append(f'<img src="{v["thumbnail"]}" />')
+        if v.get("title"):
+            desc_parts.append(f'<p>{v["title"]}</p>')
+            
+        ET.SubElement(item, "description").text = "".join(desc_parts)
             
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
@@ -30,6 +41,8 @@ def scrape_user_videos(page, username: str) -> list[dict]:
     url = f"https://www.tiktok.com/@{username}"
     page.goto(url, wait_until="domcontentloaded", timeout=45000)
     page.wait_for_timeout(4000)
+    page.evaluate("window.scrollBy(0, 500)")
+    page.wait_for_timeout(1000)
     
     videos = []
     links = page.locator("a[href*='/video/']").all()
