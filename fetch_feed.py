@@ -52,13 +52,50 @@ def generate_rss_xml(username: str, videos: list[dict]) -> str:
 
 def scrape_user_videos(page, username: str) -> list[dict]:
     url = f"https://www.tiktok.com/@{username}"
+    intercepted_videos = []
+
+    def handle_response(response):
+        if "item_list" in response.url or "itemList" in response.url:
+            try:
+                data = response.json()
+                items = data.get("itemList", [])
+                for item in items:
+                    vid_id = str(item.get("id"))
+                    title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
+                    cover = item.get("video", {}).get("cover", "")
+                    clean_url = f"https://www.tiktok.com/@{username}/video/{vid_id}"
+                    intercepted_videos.append({
+                        "video_id": vid_id,
+                        "url": clean_url,
+                        "title": title.split("\n")[0] if "\n" in title else title,
+                        "thumbnail": cover
+                    })
+            except Exception:
+                pass
+
+    page.on("response", handle_response)
+
+    print(f"[{username}] Navigating to {url}...")
     page.goto(url, wait_until="domcontentloaded", timeout=45000)
-    page.wait_for_timeout(4000)
-    page.evaluate("window.scrollBy(0, 500)")
-    page.wait_for_timeout(1000)
+    page.wait_for_timeout(3000)
     
-    videos = []
-    
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+        
+    try:
+        page.evaluate("window.scrollBy(0, 600)")
+    except Exception:
+        pass
+    page.wait_for_timeout(2000)
+
+    print(f"[{username}] Page title: '{page.title()}' | URL: {page.url}")
+
+    if intercepted_videos:
+        print(f"[{username}] Intercepted {len(intercepted_videos)} videos from network API")
+        return intercepted_videos[:10]
+
     try:
         script_element = page.locator("script#__UNIVERSAL_DATA_FOR_REHYDRATION__").first
         if script_element.count() > 0:
@@ -68,25 +105,27 @@ def scrape_user_videos(page, username: str) -> list[dict]:
                 default_scope = data.get("__DEFAULT_SCOPE__", {})
                 detail = default_scope.get("webapp.user-detail", {})
                 item_list = detail.get("itemList", [])
+                rehydration_videos = []
                 for item in item_list:
                     vid_id = str(item.get("id"))
                     title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
                     cover = item.get("video", {}).get("cover", "")
                     clean_url = f"https://www.tiktok.com/@{username}/video/{vid_id}"
-                    videos.append({
+                    rehydration_videos.append({
                         "video_id": vid_id,
                         "url": clean_url,
                         "title": title.split("\n")[0] if "\n" in title else title,
                         "thumbnail": cover
                     })
-                    if len(videos) >= 10:
-                        break
-                if videos:
-                    return videos
-    except Exception:
-        pass
+                if rehydration_videos:
+                    print(f"[{username}] Found {len(rehydration_videos)} videos in rehydration script")
+                    return rehydration_videos[:10]
+    except Exception as e:
+        print(f"[{username}] Rehydration check error: {e}")
 
+    videos = []
     links = page.locator("a[href*='/video/']").all()
+    print(f"[{username}] Found {len(links)} DOM video links")
     seen_ids = set()
     
     for link in links:
@@ -125,10 +164,18 @@ def scrape_user_videos(page, username: str) -> list[dict]:
 def main():
     os.makedirs("feeds", exist_ok=True)
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled"
+            ]
+        )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            locale="th-TH"
+            locale="th-TH",
+            viewport={"width": 1280, "height": 800}
         )
         page = context.new_page()
         apply_stealth(page)
@@ -138,9 +185,10 @@ def main():
                 videos = scrape_user_videos(page, user)
                 if videos:
                     xml_data = generate_rss_xml(user, videos)
-                    with open(f"feeds/{user}.xml", "w", encoding="utf-8") as f:
+                    feed_path = f"feeds/{user}.xml"
+                    with open(feed_path, "w", encoding="utf-8") as f:
                         f.write(xml_data)
-                    print(f"Successfully generated feed for {user} ({len(videos)} videos)")
+                    print(f"Successfully generated feed for {user} ({len(videos)} videos) -> {feed_path}")
                 else:
                     print(f"No videos found for {user}")
             except Exception as e:
