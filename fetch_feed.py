@@ -53,13 +53,25 @@ def generate_rss_xml(username: str, videos: list[dict]) -> str:
 def scrape_user_videos(page, username: str) -> list[dict]:
     url = f"https://www.tiktok.com/@{username}"
     intercepted_videos = []
+    user_lower = username.lower()
 
     def handle_response(response):
-        if "item_list" in response.url or "itemList" in response.url:
+        url_lower = response.url.lower()
+        if "recommend" in url_lower or "related" in url_lower or "explore" in url_lower:
+            return
+        if "item_list" in url_lower or "itemlist" in url_lower:
             try:
                 data = response.json()
                 items = data.get("itemList", [])
                 for item in items:
+                    author_obj = item.get("author")
+                    if isinstance(author_obj, dict):
+                        author_name = str(author_obj.get("uniqueId", "")).lower()
+                        if author_name and author_name != user_lower:
+                            continue
+                    elif isinstance(author_obj, str) and author_obj.lower() != user_lower:
+                        continue
+                        
                     vid_id = str(item.get("id"))
                     title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
                     cover = item.get("video", {}).get("cover", "")
@@ -85,7 +97,12 @@ def scrape_user_videos(page, username: str) -> list[dict]:
         pass
         
     try:
-        page.evaluate("window.scrollBy(0, 600)")
+        page.wait_for_selector("[data-e2e='user-post-item'], [data-e2e='user-post-item-list']", timeout=5000)
+    except Exception:
+        pass
+
+    try:
+        page.evaluate("window.scrollBy(0, 500)")
     except Exception:
         pass
     page.wait_for_timeout(2000)
@@ -93,7 +110,7 @@ def scrape_user_videos(page, username: str) -> list[dict]:
     print(f"[{username}] Page title: '{page.title()}' | URL: {page.url}")
 
     if intercepted_videos:
-        print(f"[{username}] Intercepted {len(intercepted_videos)} videos from network API")
+        print(f"[{username}] Intercepted {len(intercepted_videos)} author-verified videos from network API")
         return intercepted_videos[:10]
 
     try:
@@ -107,6 +124,11 @@ def scrape_user_videos(page, username: str) -> list[dict]:
                 item_list = detail.get("itemList", [])
                 rehydration_videos = []
                 for item in item_list:
+                    author_obj = item.get("author")
+                    if isinstance(author_obj, dict):
+                        author_name = str(author_obj.get("uniqueId", "")).lower()
+                        if author_name and author_name != user_lower:
+                            continue
                     vid_id = str(item.get("id"))
                     title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
                     cover = item.get("video", {}).get("cover", "")
@@ -118,22 +140,44 @@ def scrape_user_videos(page, username: str) -> list[dict]:
                         "thumbnail": cover
                     })
                 if rehydration_videos:
-                    print(f"[{username}] Found {len(rehydration_videos)} videos in rehydration script")
+                    print(f"[{username}] Found {len(rehydration_videos)} author-verified videos in rehydration script")
                     return rehydration_videos[:10]
     except Exception as e:
         print(f"[{username}] Rehydration check error: {e}")
 
     videos = []
-    links = page.locator("a[href*='/video/']").all()
-    print(f"[{username}] Found {len(links)} DOM video links")
+    user_pattern = re.compile(rf'/@?{re.escape(username)}/video/(\d+)', re.IGNORECASE)
+    
+    target_selectors = [
+        "[data-e2e='user-post-item'] a[href*='/video/']",
+        "[data-e2e='user-post-item-list'] a[href*='/video/']",
+        f"a[href*='/@{username}/video/']",
+        f"a[href*='/{username}/video/']",
+        "a[href*='/video/']"
+    ]
+    links = []
+    for sel in target_selectors:
+        found = page.locator(sel).all()
+        if found:
+            links = found
+            break
+
+    print(f"[{username}] Found {len(links)} candidate DOM video links")
     seen_ids = set()
     
     for link in links:
         href = link.get_attribute("href") or ""
-        match = re.search(r'/video/(\d+)', href)
+        match = user_pattern.search(href)
         if not match:
-            continue
-        video_id = match.group(1)
+            # Check if link is inside user-post-item and href has /video/(\d+)
+            fallback_match = re.search(r'/video/(\d+)', href)
+            if fallback_match and "/@" not in href:
+                video_id = fallback_match.group(1)
+            else:
+                continue
+        else:
+            video_id = match.group(1)
+
         if video_id in seen_ids:
             continue
         seen_ids.add(video_id)
