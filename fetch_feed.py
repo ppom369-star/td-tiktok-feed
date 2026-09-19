@@ -50,6 +50,66 @@ def generate_rss_xml(username: str, videos: list[dict]) -> str:
             
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
+def extract_videos_from_dict(data: dict, username: str) -> list[dict]:
+    videos = []
+    user_lower = username.lower()
+    
+    # 1. ItemModule structure
+    item_module = data.get("ItemModule")
+    if isinstance(item_module, dict):
+        for vid_id, item in item_module.items():
+            if not isinstance(item, dict):
+                continue
+            author_obj = item.get("author")
+            author_name = ""
+            if isinstance(author_obj, dict):
+                author_name = str(author_obj.get("uniqueId", "")).lower()
+            elif author_obj:
+                author_name = str(author_obj).lower()
+            if author_name and author_name != user_lower:
+                continue
+            title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
+            cover = item.get("video", {}).get("cover", "") or item.get("video", {}).get("originCover", "")
+            clean_url = f"https://www.tiktok.com/@{username}/video/{vid_id}"
+            videos.append({
+                "video_id": str(vid_id),
+                "url": clean_url,
+                "title": title.split("\n")[0] if "\n" in title else title,
+                "thumbnail": cover
+            })
+
+    if videos:
+        return videos
+
+    # 2. __DEFAULT_SCOPE__ structure
+    default_scope = data.get("__DEFAULT_SCOPE__", {})
+    user_detail = default_scope.get("webapp.user-detail", {})
+    item_list = user_detail.get("itemList", [])
+    if isinstance(item_list, list):
+        for item in item_list:
+            if not isinstance(item, dict):
+                continue
+            author_obj = item.get("author")
+            author_name = ""
+            if isinstance(author_obj, dict):
+                author_name = str(author_obj.get("uniqueId", "")).lower()
+            elif author_obj:
+                author_name = str(author_obj).lower()
+            if author_name and author_name != user_lower:
+                continue
+            vid_id = str(item.get("id"))
+            title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
+            cover = item.get("video", {}).get("cover", "") or item.get("video", {}).get("originCover", "")
+            clean_url = f"https://www.tiktok.com/@{username}/video/{vid_id}"
+            videos.append({
+                "video_id": vid_id,
+                "url": clean_url,
+                "title": title.split("\n")[0] if "\n" in title else title,
+                "thumbnail": cover
+            })
+
+    return videos
+
 def scrape_user_videos(page, username: str) -> list[dict]:
     url = f"https://www.tiktok.com/@{username}"
     intercepted_videos = []
@@ -62,26 +122,9 @@ def scrape_user_videos(page, username: str) -> list[dict]:
         if "item_list" in url_lower or "itemlist" in url_lower:
             try:
                 data = response.json()
-                items = data.get("itemList", [])
-                for item in items:
-                    author_obj = item.get("author")
-                    if isinstance(author_obj, dict):
-                        author_name = str(author_obj.get("uniqueId", "")).lower()
-                        if author_name and author_name != user_lower:
-                            continue
-                    elif isinstance(author_obj, str) and author_obj.lower() != user_lower:
-                        continue
-                        
-                    vid_id = str(item.get("id"))
-                    title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
-                    cover = item.get("video", {}).get("cover", "")
-                    clean_url = f"https://www.tiktok.com/@{username}/video/{vid_id}"
-                    intercepted_videos.append({
-                        "video_id": vid_id,
-                        "url": clean_url,
-                        "title": title.split("\n")[0] if "\n" in title else title,
-                        "thumbnail": cover
-                    })
+                parsed = extract_videos_from_dict(data, username)
+                if parsed:
+                    intercepted_videos.extend(parsed)
             except Exception:
                 pass
 
@@ -95,55 +138,50 @@ def scrape_user_videos(page, username: str) -> list[dict]:
         page.keyboard.press("Escape")
     except Exception:
         pass
-        
-    try:
-        page.wait_for_selector("[data-e2e='user-post-item'], [data-e2e='user-post-item-list']", timeout=5000)
-    except Exception:
-        pass
-
-    try:
-        page.evaluate("window.scrollBy(0, 500)")
-    except Exception:
-        pass
-    page.wait_for_timeout(2000)
 
     print(f"[{username}] Page title: '{page.title()}' | URL: {page.url}")
 
-    if intercepted_videos:
-        print(f"[{username}] Intercepted {len(intercepted_videos)} author-verified videos from network API")
-        return intercepted_videos[:10]
+    # Extract directly from DOM Script tags using textContent (NOT inner_text)
+    try:
+        script_payloads = page.evaluate("""() => {
+            const results = [];
+            const ids = ['__UNIVERSAL_DATA_FOR_REHYDRATION__', 'SIGI_STATE'];
+            for (const id of ids) {
+                const el = document.getElementById(id);
+                if (el && el.textContent) {
+                    results.push(el.textContent);
+                }
+            }
+            return results;
+        }""")
+        for payload in script_payloads:
+            try:
+                data = json.loads(payload)
+                parsed = extract_videos_from_dict(data, username)
+                if parsed:
+                    print(f"[{username}] Successfully extracted {len(parsed)} videos from Hydration Script")
+                    return parsed[:10]
+            except Exception as json_err:
+                print(f"[{username}] JSON parse error: {json_err}")
+    except Exception as e:
+        print(f"[{username}] Script evaluation error: {e}")
 
     try:
-        script_element = page.locator("script#__UNIVERSAL_DATA_FOR_REHYDRATION__").first
-        if script_element.count() > 0:
-            raw_text = script_element.inner_text()
-            if raw_text:
-                data = json.loads(raw_text)
-                default_scope = data.get("__DEFAULT_SCOPE__", {})
-                detail = default_scope.get("webapp.user-detail", {})
-                item_list = detail.get("itemList", [])
-                rehydration_videos = []
-                for item in item_list:
-                    author_obj = item.get("author")
-                    if isinstance(author_obj, dict):
-                        author_name = str(author_obj.get("uniqueId", "")).lower()
-                        if author_name and author_name != user_lower:
-                            continue
-                    vid_id = str(item.get("id"))
-                    title = item.get("desc", f"คลิป TikTok ใหม่ #{vid_id}")
-                    cover = item.get("video", {}).get("cover", "")
-                    clean_url = f"https://www.tiktok.com/@{username}/video/{vid_id}"
-                    rehydration_videos.append({
-                        "video_id": vid_id,
-                        "url": clean_url,
-                        "title": title.split("\n")[0] if "\n" in title else title,
-                        "thumbnail": cover
-                    })
-                if rehydration_videos:
-                    print(f"[{username}] Found {len(rehydration_videos)} author-verified videos in rehydration script")
-                    return rehydration_videos[:10]
-    except Exception as e:
-        print(f"[{username}] Rehydration check error: {e}")
+        page.evaluate("window.scrollBy(0, 800)")
+    except Exception:
+        pass
+    page.wait_for_timeout(3000)
+
+    if intercepted_videos:
+        seen = set()
+        unique_intercepted = []
+        for v in intercepted_videos:
+            if v["video_id"] not in seen:
+                seen.add(v["video_id"])
+                unique_intercepted.append(v)
+        if unique_intercepted:
+            print(f"[{username}] Intercepted {len(unique_intercepted)} author-verified videos from network API")
+            return unique_intercepted[:10]
 
     videos = []
     user_pattern = re.compile(rf'/@?{re.escape(username)}/video/(\d+)', re.IGNORECASE)
@@ -169,7 +207,6 @@ def scrape_user_videos(page, username: str) -> list[dict]:
         href = link.get_attribute("href") or ""
         match = user_pattern.search(href)
         if not match:
-            # Check if link is inside user-post-item and href has /video/(\d+)
             fallback_match = re.search(r'/video/(\d+)', href)
             if fallback_match and "/@" not in href:
                 video_id = fallback_match.group(1)
